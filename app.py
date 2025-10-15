@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, abort, render_template, request, redirect, url_for, session, flash, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
@@ -890,9 +890,6 @@ def recommend(user_id, filter_following):
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
 
-    recommended_posts = {} 
-
-    return recommended_posts;
 
 # Task 3.2
 def user_risk_analysis(user_id):
@@ -919,7 +916,7 @@ def moderate_content(content):
     """
     Args
         content: the text content of a post or comment to be moderated.
-        
+    
     Returns: 
         A tuple containing the moderated content (string) and a severity score (float). There are no strict rules or bounds to the severity score, other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk.
     
@@ -931,10 +928,52 @@ def moderate_content(content):
             password: admin
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-
-    moderated_content = content
+    original_content = content
     score = 0
+    moderated_content = original_content
+    TIER1_PATTERN = r'\b(' + '|'.join(TIER1_WORDS) + r')\b'
+    TIER2_PATTERN = r'(' + '|'.join(TIER2_PHRASES) + r')'
+    TIER3_PATTERN = r'\b(' + '|'.join(TIER3_WORDS) + r')\b'
+    URL_PATTERN = r'\b(?:https?://|www\.)\S+|\b[a-z0-9.-]+\.[a-z]{2,}\b'
     
+
+    #Checking if bad words/phrases are found
+    tier1_violation = re.search(TIER1_PATTERN, original_content, flags=re.IGNORECASE)
+    tier2_violation = re.search(TIER2_PATTERN, original_content, flags=re.IGNORECASE)
+    tier3_violation = re.findall(TIER3_PATTERN, original_content, flags=re.IGNORECASE)
+    #Checking if URLs are found
+    url_violation = re.findall(URL_PATTERN, original_content, flags=re.IGNORECASE)
+    
+    #RULE 1.1.1
+    if tier1_violation:
+        return "[content removed due to severe violation]", 5.0
+    #RULE 1.1.2
+    if tier2_violation:
+        return "[content removed due to severe violation]", 5.0
+    #RULE 1.2.1
+    if tier3_violation:
+        score = len(tier3_violation) * 2
+        moderated_content = re.sub(TIER3_PATTERN, lambda m: '*' * len(m.group(0)), original_content, flags=re.IGNORECASE)
+    #RULE 1.2.2
+    if url_violation:
+        score = len(url_violation) * 2
+        moderated_content = re.sub(URL_PATTERN, "[link removed]", original_content, flags=re.IGNORECASE)
+    #RULE 1.2.3
+    letters = [letter for letter in moderated_content if letter.isalpha()]
+    if len(letters) > 15:
+        count = 0
+        for letter in letters:
+            if letter.isupper():
+                count += 1
+        if count / len(letters) > 0.7:
+            score += 0.5
+    #ADDITIONAL RULE
+    BOT_START_PATTERN = r'\?[a-z0-9.-].*'
+    bot_violation = re.findall(BOT_START_PATTERN, original_content, flags=re.IGNORECASE)
+    if bot_violation:
+        score = len(bot_violation) * 1.0
+        moderated_content = re.sub(BOT_START_PATTERN, "[this is most likely written by a bot, so it is removed]", original_content, flags=re.IGNORECASE)
+
     return moderated_content, score
 
 
