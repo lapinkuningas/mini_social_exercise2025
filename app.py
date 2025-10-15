@@ -972,7 +972,8 @@ def moderate_content(content):
     bot_violation = re.findall(BOT_START_PATTERN, original_content, flags=re.IGNORECASE)
     if bot_violation:
         score = len(bot_violation) * 1.0
-        moderated_content = re.sub(BOT_START_PATTERN, "[this is most likely written by a bot, so it is removed]", original_content, flags=re.IGNORECASE)
+        moderated_content = re.sub(BOT_START_PATTERN, "[this is most likely written by a bot, " \
+        "so it is removed]", original_content, flags=re.IGNORECASE)
 
     return moderated_content, score
 
