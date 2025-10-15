@@ -908,6 +908,16 @@ def user_risk_analysis(user_id):
     
     score = 0
 
+    user_posts = query_db('select content from posts where user_id = ?', (user_id,))
+    for post in user_posts:
+        _, post_risk_score = moderate_content(post['content'])
+        score += post_risk_score
+
+    user_comments = query_db('select content from comments where user_id = ?', (user_id,))
+    for comment in user_comments:
+        _, comment_risk_score = moderate_content(comment['content'])
+        score += comment_risk_score
+
     return score;
 
     
@@ -971,7 +981,7 @@ def moderate_content(content):
     BOT_START_PATTERN = r'\?[a-z0-9.-].*'
     bot_violation = re.findall(BOT_START_PATTERN, original_content, flags=re.IGNORECASE)
     if bot_violation:
-        score = len(bot_violation) * 1.0
+        score = len(bot_violation) * 1
         moderated_content = re.sub(BOT_START_PATTERN, "[this is most likely written by a bot, " \
         "so it is removed]", original_content, flags=re.IGNORECASE)
 
