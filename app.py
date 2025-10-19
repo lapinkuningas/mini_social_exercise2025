@@ -889,8 +889,69 @@ def recommend(user_id, filter_following):
     - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
+    liked_posts_content = query_db("select content from posts join reactions on posts.id = reactions.post_id " \
+    "where reactions.user_id = ? and reactions.reaction_type = 'like'", (user_id,))
+    word_counts = collections.Counter()
+    stop_words = {'a', 'an', 'the', 'in', 'on', 'is', 'it', 'to', 'for', 'of', 'and', 'with'}
+    
+    for post in liked_posts_content:
+        words = re.findall(r'\b\w+\b', post['content'].lower())
+        for word in words:
+            if word not in stop_words and len(word) > 2:
+                word_counts[word] += 1
+    
+    top_keywords = [word for word, _ in word_counts.most_common(10)]
+    
+    similar_users = set()
 
+    followed_users = query_db('select followed_id from follows where follower_id = ?', (user_id,))
+    followed_users = [f[0] for f in followed_users]
+    similar_users.update(followed_users)
 
+    reaction_users = query_db("select posts.user_id from reactions join posts on reactions.post_id = posts.id " \
+    "where reactions.user_id = ? and reactions.reaction_type not in ('angry', 'sad')", (user_id,))
+    comment_users = query_db('select posts.user_id from comments join posts on comments.post_id = posts.id where comments.user_id = ?', (user_id,))
+
+    similar_users.update(reaction[0] for reaction in reaction_users)
+    similar_users.update(comment[0] for comment in comment_users)
+
+    if not similar_users:
+        return []
+    qualified_users = ",".join(f"'{u}'" for u in similar_users)
+
+    query = (
+    "SELECT posts.id, posts.user_id, posts.content, users.username, posts.created_at, "
+    "COUNT(DISTINCT reactions.id), COUNT(DISTINCT comments.id) "
+    "FROM posts "
+    "LEFT JOIN reactions ON posts.id = reactions.post_id "
+    "LEFT JOIN comments ON posts.id = comments.post_id "
+    "LEFT JOIN users ON posts.user_id = users.id "
+    f"WHERE (reactions.user_id IN ({qualified_users}) "
+    f"OR comments.user_id IN ({qualified_users}) "
+    f"OR posts.user_id IN ({qualified_users})) "
+    "GROUP BY posts.id "
+    "ORDER BY (COUNT(DISTINCT reactions.id) + COUNT(DISTINCT comments.id)) DESC, posts.created_at DESC"
+    )
+
+    rows = query_db(query)
+
+    posts = []
+    for row in rows:
+        post = {
+            'id': row[0],
+            'user_id': row[1],
+            'content': row[2],
+            'username': row[3],
+            'created_at': row[4]
+        }
+        if filter_following and post['user_id'] not in followed_users:
+            continue
+        posts.append(post)
+        if len(posts) >= 5:
+            break
+
+    return sorted(posts, key=lambda p: p['created_at'], reverse=True)
+    
 # Task 3.2
 def user_risk_analysis(user_id):
     """
@@ -905,22 +966,59 @@ def user_risk_analysis(user_id):
             password: admin
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-    
-    score = 0
+    post_count = 0
+    comment_count = 0
+    average_comment_score = 0
 
+    #PROFILE SCORING
+    user_profile = query_db('select profile from users where id = ?', (user_id,))
+    profile_score = 0
+    if user_profile and user_profile[0]['profile']:
+        _, profile_score = moderate_content(user_profile[0]['profile'])
+
+    #POST SCORING
     user_posts = query_db('select content from posts where user_id = ?', (user_id,))
+    post_count = len(user_posts)
+    final_post_score = 0
     for post in user_posts:
         _, post_risk_score = moderate_content(post['content'])
-        score += post_risk_score
+        final_post_score += post_risk_score
+    average_post_score = final_post_score / post_count if post_count > 0 else 0
 
+    #COMMENT SCORING
     user_comments = query_db('select content from comments where user_id = ?', (user_id,))
+    comment_count = len(user_comments)
+    final_comment_score = 0
     for comment in user_comments:
         _, comment_risk_score = moderate_content(comment['content'])
-        score += comment_risk_score
-
-    return score;
-
+        final_comment_score += comment_risk_score
+    average_comment_score = final_comment_score / comment_count if comment_count > 0 else 0
     
+    #COMBINING SCORES
+    content_risk_score = (profile_score * 1) + (average_post_score * 3) + (average_comment_score * 1)
+
+    #ADDITIONAL RULE CHECKING DUPLICATE POSTS
+    duplicate_posts = query_db('select content, count(*) as duplicates from posts where user_id = ? ' \
+    'group by content having count(content) > 1', (user_id,))
+    if duplicate_posts and len(duplicate_posts) > 0:
+        content_risk_score *= 1.4
+
+    #AGE MULTIPLIER
+    account_age = query_db('select created_at from users where id = ?', (user_id,))
+    account_age_in_days = 0
+    if account_age and account_age[0]['created_at']:
+        created_at = account_age[0]['created_at']
+        account_age_in_days = (datetime.now() - created_at).days
+
+    if account_age_in_days < 7:
+        user_risk_score = content_risk_score * 1.5
+    elif account_age_in_days < 30:
+        user_risk_score = content_risk_score * 1.2
+    else:
+        user_risk_score = content_risk_score
+
+    return user_risk_score;
+
 # Task 3.3
 def moderate_content(content):
     """
@@ -938,9 +1036,8 @@ def moderate_content(content):
             password: admin
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-    original_content = content
     score = 0
-    moderated_content = original_content
+    moderated_content = content
     TIER1_PATTERN = r'\b(' + '|'.join(TIER1_WORDS) + r')\b'
     TIER2_PATTERN = r'(' + '|'.join(TIER2_PHRASES) + r')'
     TIER3_PATTERN = r'\b(' + '|'.join(TIER3_WORDS) + r')\b'
@@ -948,26 +1045,26 @@ def moderate_content(content):
     
 
     #Checking if bad words/phrases are found
-    tier1_violation = re.search(TIER1_PATTERN, original_content, flags=re.IGNORECASE)
-    tier2_violation = re.search(TIER2_PATTERN, original_content, flags=re.IGNORECASE)
-    tier3_violation = re.findall(TIER3_PATTERN, original_content, flags=re.IGNORECASE)
+    tier1_violation = re.search(TIER1_PATTERN, content, flags=re.IGNORECASE)
+    tier2_violation = re.search(TIER2_PATTERN, content, flags=re.IGNORECASE)
+    tier3_violation = re.findall(TIER3_PATTERN, content, flags=re.IGNORECASE)
     #Checking if URLs are found
-    url_violation = re.findall(URL_PATTERN, original_content, flags=re.IGNORECASE)
+    url_violation = re.findall(URL_PATTERN, content, flags=re.IGNORECASE)
     
     #RULE 1.1.1
     if tier1_violation:
-        return "[content removed due to severe violation]", 5.0
+        return "[content removed due to severe violation]", 5
     #RULE 1.1.2
     if tier2_violation:
-        return "[content removed due to severe violation]", 5.0
+        return "[content removed due to spam/scam policy]", 5
     #RULE 1.2.1
     if tier3_violation:
-        score = len(tier3_violation) * 2
-        moderated_content = re.sub(TIER3_PATTERN, lambda m: '*' * len(m.group(0)), original_content, flags=re.IGNORECASE)
+        score += len(tier3_violation) * 2
+        moderated_content = re.sub(TIER3_PATTERN, lambda m: '*' * len(m.group(0)), moderated_content, flags=re.IGNORECASE)
     #RULE 1.2.2
     if url_violation:
-        score = len(url_violation) * 2
-        moderated_content = re.sub(URL_PATTERN, "[link removed]", original_content, flags=re.IGNORECASE)
+        score += len(url_violation) * 2
+        moderated_content = re.sub(URL_PATTERN, "[link removed]", moderated_content, flags=re.IGNORECASE)
     #RULE 1.2.3
     letters = [letter for letter in moderated_content if letter.isalpha()]
     if len(letters) > 15:
@@ -979,11 +1076,11 @@ def moderate_content(content):
             score += 0.5
     #ADDITIONAL RULE
     BOT_START_PATTERN = r'\?[a-z0-9.-].*'
-    bot_violation = re.findall(BOT_START_PATTERN, original_content, flags=re.IGNORECASE)
+    bot_violation = re.findall(BOT_START_PATTERN, content, flags=re.IGNORECASE)
     if bot_violation:
         score = len(bot_violation) * 1
         moderated_content = re.sub(BOT_START_PATTERN, "[this is most likely written by a bot, " \
-        "so it is removed]", original_content, flags=re.IGNORECASE)
+        "so it is removed]", content, flags=re.IGNORECASE)
 
     return moderated_content, score
 
