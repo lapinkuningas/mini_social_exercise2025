@@ -8,6 +8,7 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
 import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
 database_file = "minisocial_database.sqlite"
 try:
@@ -22,6 +23,7 @@ def main():
     nltk.download('punkt')
     nltk.download('stopwords')
     nltk.download('wordnet')
+    nltk.download('vader_lexicon')
 
     content_from_all = """select id, content, 'post' as table_name from posts 
                         union all select id, content, 'comment' as table_name from comments"""
@@ -67,20 +69,30 @@ def main():
         else: 
             print(f'LDA was trained with {K} topics. {coherence_score} as an average topic coherence score is not that good.')
 
+    analyzer = SentimentIntensityAnalyzer()
     topic_counts = [0] * optimal_k
-    for bow in corpus:
+    topic_sentiments = [[]for _ in range(optimal_k)]
+    for i, bow in enumerate(corpus):
         topic_dist = optimal_lda.get_document_topics(bow)
         if not topic_dist:
             continue
         dominant_topic = max(topic_dist, key=lambda x: x[1])[0]
         if dominant_topic < len(topic_counts):
             topic_counts[dominant_topic] += 1
+            text = " ".join(bow_list[i])
+            sentiment = analyzer.polarity_scores(text)["compound"]
+            topic_sentiments[dominant_topic].append(sentiment)
     sorted_topics = sorted(enumerate(topic_counts), key=lambda x: x[1], reverse=True)
     print('Top 10 topics by frequency together with 10 words representing the topic: ')
     for i, (topic_index, count) in enumerate(sorted_topics[:10], start=1):
         topic_words = optimal_lda.show_topic(topic_index, topn=10)
         topic_keywords = ", ".join([w for w, _ in topic_words])
+        if topic_sentiments[topic_index]:
+            average_sentiment = sum(topic_sentiments[topic_index]) / len(topic_sentiments[topic_index])
+            value = "POSITIVE" if average_sentiment > 0.05 else "NEGATIVE" if average_sentiment < -0.05 else "NEUTRAL"
+            sentiment_information = f"{average_sentiment:.2f} ({value})"
         print(f'{i}. Topic {topic_index} ({count} posts): {topic_keywords}')
+        print(f'Average sentiment score: {sentiment_information}')
 
 if __name__ == '__main__':
     main()
