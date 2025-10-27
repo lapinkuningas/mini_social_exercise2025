@@ -18,7 +18,7 @@ except Exception as e:
     print("Something went wrong")
 
 
-#EXERCISE 4.1 POPULAR TOPICS
+#EXERCISE 4.1 & 4.2 // POPULAR TOPICS AND THEIR SENTIMENT
 def main():
     nltk.download('punkt')
     nltk.download('stopwords')
